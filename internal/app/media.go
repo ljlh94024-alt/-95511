@@ -68,26 +68,6 @@ func filterDownloadCookies(cookie string) string {
 	return strings.Join(kept, "; ")
 }
 
-// imageCDNRe 匹配生成图片的 CDN 链。生成是同步的，链就在 StreamGenerate 响应里；
-// gg-dl 来自首帧、gg 来自 hNvQHb 历史。
-//
-// 注意：响应里给的是 plain 形（gg-dl/… 或 gg/…），直接 GET 它只回 text/plain 的
-// 指针，不是图。真图要把路径改成 rd- 前缀（rd-gg-dl/… / rd-gg/…）—— 这是抓包里浏览器
-// 实际取图用的形（回 image/jpeg）。见 toRenderURL。
-var imageCDNRe = regexp.MustCompile(`https://lh3\.googleusercontent\.com/(?:gg-dl|gg)/[A-Za-z0-9_\-]+`)
-
-// toRenderURL 把图片 CDN 链的 plain 形改成 rd- 渲染形。
-// plain gg-dl/gg 回 text/plain 指针，rd- 形才回真图字节（抓包实证）。
-func toRenderURL(u string) string {
-	if strings.Contains(u, "/gg-dl/") {
-		return strings.Replace(u, "/gg-dl/", "/rd-gg-dl/", 1)
-	}
-	if strings.Contains(u, "/gg/") {
-		return strings.Replace(u, "/gg/", "/rd-gg/", 1)
-	}
-	return u
-}
-
 // fetchMediaArtifacts 取回媒体产物字节。cookie / sapisid / xsrf / proxyURL 必须跟生成
 // 那次同一套 —— 产物挂在这个会话/这个出口上，换出口/换号都取不到。
 //
@@ -104,11 +84,11 @@ func fetchMediaArtifacts(tool int, raw, cid, cookie, sapisid, xsrf, proxyURL, de
 // fetchImageArtifacts 取回生成的图片。链在 StreamGenerate 响应里就有，抠不到再退回轮询
 // hNvQHb。下载走 mediaGetFollow（跟随 302 并每跳重发 cookie）。
 func fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime string) ([]MediaArtifact, error) {
-	urls := dedupeStrings(imageCDNRe.FindAllString(raw, -1))
+	urls := collectImageURLs(raw)
 	if len(urls) == 0 {
 		for i := 0; i < 6; i++ {
 			if body, err := pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL); err == nil {
-				if u := dedupeStrings(imageCDNRe.FindAllString(body, -1)); len(u) > 0 {
+				if u := collectImageURLs(body); len(u) > 0 {
 					urls = u
 					break
 				}
@@ -121,7 +101,7 @@ func fetchImageArtifacts(raw, cid, cookie, sapisid, xsrf, proxyURL, defaultMime 
 	}
 	var arts []MediaArtifact
 	for _, u := range urls {
-		mime, data, err := downloadBytes(toRenderURL(u), cookie, proxyURL, defaultMime)
+		mime, data, err := downloadBytes(u, cookie, proxyURL, defaultMime)
 		if err != nil {
 			return arts, err
 		}
@@ -202,24 +182,22 @@ func pollHistoryRaw(cid, cookie, sapisid, xsrf, proxyURL string) (string, error)
 	return string(body), nil
 }
 
-// collectDownloadURLs 从 hNvQHb 响应里挖出所有 contribution 下载链。
-// 响应是 batchexecute 信封：每行 [["wrb.fr","hNvQHb","<json 字符串>",…]，产物链埋在
-// 那个内层 json 字符串里，深度不定，递归找。
-func collectDownloadURLs(raw string) []string {
+// walkFramesForURLs 递归遍历 batchexecute 信封里所有字符串，返回 want 命中的那些（去重保序）。
+//
+// 响应结构：每行 [["wrb.fr","<rpc>","<json 字符串>",…]，真正的数据埋在那个内层 json
+// 字符串里，深度不定。必须走 JSON 解析而不是对 raw 直接正则 —— raw 是**双层转义** JSON，
+// URL 里的斜杠/边界在 raw 里跟解出来的不一样，正则会多抓或少抓几个字符，拼出来的 URL
+// 就废了（实测正则抠的比真 URL 长 2 个字符，下载直接 400）。
+func walkFramesForURLs(raw string, want func(string) bool) []string {
 	seen := map[string]bool{}
 	var out []string
-	add := func(s string) {
-		if !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
-	}
 	var walk func(interface{})
 	walk = func(o interface{}) {
 		switch v := o.(type) {
 		case string:
-			if strings.Contains(v, "contribution.usercontent.google.com/download") {
-				add(v)
+			if want(v) && !seen[v] {
+				seen[v] = true
+				out = append(out, v)
 			}
 		case []interface{}:
 			for _, x := range v {
@@ -256,6 +234,23 @@ func collectDownloadURLs(raw string) []string {
 		}
 	}
 	return out
+}
+
+// collectDownloadURLs 从响应里挖出所有 contribution 下载链（音乐/视频用）。
+func collectDownloadURLs(raw string) []string {
+	return walkFramesForURLs(raw, func(s string) bool {
+		return strings.Contains(s, "contribution.usercontent.google.com/download")
+	})
+}
+
+// collectImageURLs 从响应里挖出所有生成图片的 CDN 链（gg-dl 来自首帧、gg 来自 hNvQHb）。
+// 这条 plain 链直接 GET 就回真图 —— 不要加 rd- 前缀（抓包里那个 rd- 是**另一套 token**，
+// 拿本链的 token 拼 rd- 会 400）。
+func collectImageURLs(raw string) []string {
+	return walkFramesForURLs(raw, func(s string) bool {
+		return strings.Contains(s, "lh3.googleusercontent.com/gg-dl/") ||
+			strings.Contains(s, "lh3.googleusercontent.com/gg/")
+	})
 }
 
 // pickResponseDataURLs 从一堆下载链里挑真正能下的那种（c 参数解出来含 "response_data"）。
@@ -445,19 +440,6 @@ func extractConversationID(raw string) string {
 		}
 	}
 	return ""
-}
-
-// dedupeStrings 去重且保序。
-func dedupeStrings(in []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, s := range in {
-		if !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
-	}
-	return out
 }
 
 // artifactSeen 判断这份字节是不是已经收过（按内容比，收掉同图不同 token 的重复）。
