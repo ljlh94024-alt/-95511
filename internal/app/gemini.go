@@ -51,6 +51,11 @@ type ModelConfig struct {
 	// Thinking 为真时填 inner[80]=2，即网页 UI 上的「扩展思考」。跟 HexID 正交
 	// —— 三个模型都能开，不是某个专属模型。
 	Thinking bool
+	// Tool 非 0 时填 inner[49]，让服务端换后端模型生成媒体产物（14=生图 Nano Banana
+	// / 21=音乐 Lyria）。产物不在 StreamGenerate 响应里，要再走 hNvQHb 拿下载链、
+	// 用下载 host 认的 cookie 子集下回原始字节，见 media.go。跟登录态绑定：匿名请求
+	// 这个会被静默降级成一句「Are you signed in?」文本。
+	Tool int
 }
 
 // 只暴露服务端清单（batchexecute?rpcids=otAQ7b）里真实存在的模型。
@@ -67,6 +72,11 @@ var Models = map[string]ModelConfig{
 	"gemini-3.6-flash-thinking":      {HexID: hexFlash36, Mode: 1, Thinking: true, Desc: "3.6 Flash with extended thinking; needs a signed-in cookie"},
 	"gemini-3.5-flash-lite-thinking": {HexID: hexFlashLite, Mode: 6, Thinking: true, Desc: "3.5 Flash-Lite with extended thinking; needs a signed-in cookie"},
 	"gemini-3.1-pro-thinking":        {HexID: hexPro31, Mode: 3, Thinking: true, Desc: "3.1 Pro with extended thinking; needs a signed-in cookie"},
+
+	// 媒体生成。inner[49] 一填，服务端换后端模型出图/出乐；产物走 hNvQHb + 下载 host
+	// 取回，以 base64 data URL 塞进 content 返回。都要登录态，没 cookie 时不暴露。
+	"gemini-image": {HexID: hexFlash36, Mode: 1, Tool: toolImage, Desc: "Image generation (Nano Banana); returns a base64 data URL; needs a signed-in cookie"},
+	"gemini-music": {HexID: hexFlash36, Mode: 1, Tool: toolMusic, Desc: "Music generation (Lyria, ~30s); returns a base64 data URL; needs a signed-in cookie"},
 }
 
 // hasCookie 表示 cookie 池里有没有可用账号。决定 3.1 Pro 是否出现在模型列表里。
@@ -90,7 +100,7 @@ func availableModels() map[string]ModelConfig {
 	}
 	out := make(map[string]ModelConfig, len(Models))
 	for k, v := range Models {
-		if k == "gemini-3.1-pro" || v.Thinking {
+		if k == "gemini-3.1-pro" || v.Thinking || v.Tool > 0 {
 			continue
 		}
 		out[k] = v
@@ -110,12 +120,15 @@ func resolveModel(modelName string) (string, ModelConfig, error) {
 	}
 	mc, ok := availableModels()[modelName]
 	if !ok {
-		if _, exists := Models[modelName]; exists && !hasCookie() {
+		if full, exists := Models[modelName]; exists && !hasCookie() {
+			downgrade := "are silently downgraded to 3.5 Flash-Lite"
+			if full.Tool > 0 {
+				downgrade = "are silently downgraded to a plain \"Are you signed in?\" text reply"
+			}
 			return "", ModelConfig{}, fmt.Errorf(
 				"%s is unavailable without a Google account cookie: anonymous requests for it "+
-					"are silently downgraded to 3.5 Flash-Lite. Add a cookie in the admin panel "+
-					"(Settings) or via --cookie-file to enable it",
-				modelName)
+					"%s. Add a cookie in the admin panel (Cookie pool) or via --cookie-file to enable it",
+				modelName, downgrade)
 		}
 		return "", ModelConfig{}, fmt.Errorf("unknown model: %s", modelName)
 	}
@@ -144,6 +157,11 @@ type StreamResult struct {
 	AccountLabel string
 	TTFBMs       int64
 	TotalMs      int64
+	// Artifacts 是媒体模型（生图/音乐）取回的产物原始字节，非媒体模型为空。
+	Artifacts []MediaArtifact
+	// MediaErr 记媒体产物取回失败的原因：生成本身 200 了、但走 hNvQHb / 下载那步挂了。
+	// 调用方据此报错，而不是返回一个只有文字没有图的「半成功」。
+	MediaErr string
 }
 
 // RateLimitError 表示所有 IP slot 都达到了限流上限。
@@ -453,6 +471,10 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 		inner[80] = thinkingExtended
 		inner[96] = 1
 	}
+	// 媒体工具开关。填了服务端就换后端模型出图/出乐（响应里带产物引用，字节要另取）。
+	if mc.Tool > 0 {
+		inner[49] = mc.Tool
+	}
 
 	innerJSON, err := json.Marshal(inner)
 	if err != nil {
@@ -597,7 +619,7 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 			recordProxyResult(picked.ID, true, "")
 		}
 		markCookieByStatus(cookieID, 200, "")
-		return &StreamResult{
+		result := &StreamResult{
 			Emitted:          tracker.emitted,
 			EmittedReasoning: rtracker.emitted,
 			Raw:              string(raw),
@@ -609,7 +631,26 @@ func streamGenerateWithFiles(prompt, latest string, mc ModelConfig, pending []pe
 			AccountLabel:     cookieLabel,
 			TTFBMs:           ttfb,
 			TotalMs:          time.Since(t0).Milliseconds(),
-		}, nil
+		}
+		// 媒体模型：生成的产物字节不在这条响应里，要用同一套 cookie / 出口再走一遍
+		// hNvQHb + 下载 host 取回。取不到就记 MediaErr，让上层报错而不是返回半成品。
+		if mc.Tool == toolImage || mc.Tool == toolMusic {
+			mime := "image/png"
+			if mc.Tool == toolMusic {
+				mime = "audio/mpeg"
+			}
+			arts, aerr := fetchMediaArtifacts(
+				mc.Tool, string(raw), extractConversationID(string(raw)),
+				cookieStr, sapisid, xsrfToken, proxyURL, mime)
+			if aerr != nil {
+				logf("[media] 取回产物失败: %v", aerr)
+				result.MediaErr = aerr.Error()
+			} else {
+				result.Artifacts = arts
+				logf("[media] 取回 %d 份产物", len(arts))
+			}
+		}
+		return result, nil
 	}
 	if lastErr != nil {
 		markCookieByStatus(cookieID, lastStatus, lastErr.Error())

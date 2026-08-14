@@ -65,7 +65,9 @@ func buildUsage(prompt, text string, responsesAPI bool) map[string]int {
 // 单列在 completion_tokens_details.reasoning_tokens 里，跟 OpenAI 的做法一致，
 // 想计费的人自己加。
 func buildUsageWithReasoning(prompt, text, reasoning string, responsesAPI bool) map[string]int {
-	in, out := countTokens(prompt), countTokens(text)
+	// 媒体产物是 base64 data URL，上百万字符。不计进 output token：那是二进制内容，
+	// 按 token 计费等于让用户为看不见的字节买单，下游 newapi 按 output token 收钱。
+	in, out := countTokens(prompt), countTokens(stripDataURLs(text))
 	if responsesAPI {
 		return map[string]int{
 			"input_tokens":  in,
@@ -128,6 +130,20 @@ func callGemini(prompt, latest string, mc ModelConfig, tools []map[string]interf
 		return "", nil, res, err
 	}
 	text := extractResponseText(res.Raw)
+	// 媒体模型（生图/音乐）：生成 200 了但产物字节没取回来，直接报错而不是返回一个
+	// 只有文字没有图的半成品 —— 客户端要的就是那张图/那段乐。
+	if mc.Tool == toolImage || mc.Tool == toolMusic {
+		if len(res.Artifacts) == 0 {
+			msg := res.MediaErr
+			if msg == "" {
+				msg = "媒体产物取回失败"
+			}
+			return "", nil, res, fmt.Errorf("media generation succeeded but artifact retrieval failed: %s", msg)
+		}
+		// 产物以 base64 data URL 追加到正文（可能没正文，只有图）。
+		text = appendArtifactMarkdown(text, res.Artifacts)
+		return text, nil, res, nil
+	}
 	if text == "" {
 		// 上游拒绝时只回一个结束帧、没有内容帧（实测被拒时 raw 仅 216
 		// 字节）。这种情况必须报错：以前会当成空回复返回 200 + content:null，
@@ -146,6 +162,9 @@ func callGemini(prompt, latest string, mc ModelConfig, tools []map[string]interf
 // Privacy: the prompt/response strings themselves are never persisted —
 // only their length, model name, latency, status, and proxy info.
 func recordRequest(endpoint, model, prompt, response string, res *StreamResult, status int, errStr string, stream bool) {
+	// 媒体产物是超长 base64，剥掉再算 token/长度：既不让它污染统计，也免得在请求线程里
+	// 对上百万字符跑 tiktoken 白白拖慢。
+	response = stripDataURLs(response)
 	r := &RequestRow{
 		TS:            time.Now().Unix(),
 		Model:         model,
