@@ -232,6 +232,8 @@ Gemini's backend only recognises three models (the list comes from `batchexecute
 | `gemini-3.6-flash-thinking` | 3.6 Flash with extended thinking; **needs a cookie** |
 | `gemini-3.5-flash-lite-thinking` | 3.5 Flash-Lite with extended thinking; **needs a cookie** |
 | `gemini-3.1-pro-thinking` | 3.1 Pro with extended thinking; **needs a cookie** |
+| `gemini-image` | Image generation (Nano Banana); base64 output; **needs a cookie** |
+| `gemini-music` | Music (Lyria, ~30s); base64 output; **needs a cookie** |
 
 Without a cookie, `/v1/models` returns only the first two, and asking for `gemini-3.1-pro` fails with an explanation. An anonymous request for it is always silently downgraded to 3.5 Flash-Lite — better to fail at model selection than to hand back a reply that "succeeded" but isn't Pro.
 
@@ -272,9 +274,21 @@ you do want to bill for it.
 
 Anonymous calls (no cookie) only reach the two text models above plus Gemini's built-in web search. `gemini-3.1-pro` is silently downgraded to 3.5 Flash-Lite anonymously, which is why it isn't exposed at all in that case.
 
-Attaching a cookie additionally unlocks `gemini-3.1-pro`, **extended thinking for all three models**, **image input**, and **a longer context** (over-long conversations are sent as a text attachment, see below).
+Attaching a cookie additionally unlocks `gemini-3.1-pro`, **extended thinking for all three models**, **image input**, **a longer context** (over-long conversations are sent as a text attachment, see below), and **image generation (`gemini-image`) / music (`gemini-music`)** (see "Image & music" below).
 
-Image generation, music, video, deep research and canvas also need a signed-in session but **are not implemented here** — they require extra tool slots in the request parameter array that this project does not send yet. The panel's "actual model" column always shows which model the backend really used, so any downgrade is visible.
+Video, deep research and canvas also need a signed-in session but **are not implemented here**: video is refused for free accounts, deep research is a multi-step async flow — neither is a one-line add. The panel's "actual model" column always shows which model the backend really used, so any downgrade is visible.
+
+### Image & music
+
+`gemini-image` (Nano Banana) and `gemini-music` (Lyria, ~30s) go through `/v1/chat/completions` just like a normal chat — put the image/music description in the user message. The bytes come back as a **base64 data URL** inside `content`: images as `![image](data:image/png;base64,…)`, audio as `[audio](data:audio/mpeg;base64,…)`. Markdown-capable clients render the image inline; to save a file, decode the base64 after the comma.
+
+```bash
+curl http://127.0.0.1:8083/v1/chat/completions \
+  -H "Authorization: Bearer sk-gemini-..." -H "Content-Type: application/json" \
+  -d '{"model":"gemini-image","messages":[{"role":"user","content":"an orange cat in an astronaut helmet"}]}'
+```
+
+Not returning a URL is deliberate — Gemini's artifact links need the cookie to download, so a bare link would be dead on the client side; the server fetches the bytes and inlines them. The base64 is **not counted in `completion_tokens`** (a single image is millions of tokens; billing that downstream would be absurd), only the caption text is. Both need a cookie, so they don't appear in `/v1/models` without one. Params like `size` / `n` have no upstream knob and are ignored.
 
 **Multi-turn context is implemented by flattening `messages` into a single prompt** (the web protocol's native multi-turn needs a token that only a browser JS runtime can produce, which plain HTTP cannot forge). The cost is that every turn resends the whole history, which runs into the single-request length wall: about **130,000 UTF-8 bytes**. Past that the upstream **silently truncates from the tail without an error** — and since the newest message sits at the end, what gets eaten is exactly what you just asked, which reads as "the model suddenly got dumb".
 
@@ -349,7 +363,7 @@ Attaching a Google account cookie makes requests run as a signed-in session. Wha
 
 > Signed-in requests must carry an extra XSRF token. The project fetches it from the Gemini page automatically, caches it per cookie and re-fetches on expiry — nothing to configure. (Missing it makes **every** request fail with 400 while anonymous traffic keeps working — an earlier version hit exactly that.)
 
-A signed-in session unlocks image generation (Nano Banana 2), music (Lyria 3), video, deep research, canvas and extended thinking in the web app, but **none of that is implemented here yet**; today a cookie only changes which session the requests belong to.
+A signed-in session unlocks `gemini-3.1-pro` + reasoning chain, image input, and **image generation (`gemini-image`) / music (`gemini-music`)** (see "Image & music" above). Video, deep research and canvas also need a signed-in session but **are not implemented here yet**.
 
 1. Sign in to [gemini.google.com](https://gemini.google.com)
 2. DevTools (F12) → Application → Cookies → `https://gemini.google.com`
@@ -493,9 +507,9 @@ docker-compose.yml         single container, pulls the ghcr image by default, sq
 ## Limitations
 
 - **Per-IP ceiling**: when sending in bursts, measured at **80-180 requests** before the sorry-page redirect (connection reuse buys about 60%: at concurrency 10, a reused pool reached 172/177 versus 106/109 for a fresh connection per request). But **a steady pace barely reaches the ceiling at all** — 10 requests/minute on a static IP ran 800 requests without a block. `per_ip_rph=80` sits at the bottom of the burst range → use the proxy pool to scale, or pace yourself and raise the limit
-- **Signed-in features**: image generation, music, video, deep research and canvas are not implemented (the protocol is verified to work; what's missing is the request parameter slots)
+- **Signed-in features**: image generation (`gemini-image`) and music (`gemini-music`) are implemented; video, deep research and canvas are not (video is refused for free accounts, deep research is a multi-step async flow)
 - **Function calling**: prompt-level, the model doesn't always answer in the expected format (a real protocol layer isn't available to us)
-- **Multimodal**: image input only, and it needs a cookie. Image, music and video generation are verified at the protocol level but not implemented
+- **Multimodal**: image input needs a cookie. Image and music generation work with a cookie (`gemini-image` / `gemini-music`); video generation is not implemented
 - **Long context hits two walls**: ~130,000 bytes for the request body and ~160,000 bytes for attachments (the latter is the **total** amount of content the model can see — splitting it across several attachments does not raise the budget). A cookie only takes the usable length from 130K to ~160K; genuinely long conversations still have to be compacted by the client
 - **Token counts**: tiktoken estimates (Gemini's real tokenizer is not public), within about ±20% of the true value
 - **Cookie pool never auto-removes a bad account**: outcomes are written back (only 401/403 count as the cookie's fault — network errors and 302 blocks don't), but failures never trigger an automatic disable, so you have to do it from the panel. Also `last_ok_at` only means "a request using this cookie succeeded", not that the cookie is still valid — an expired cookie doesn't error, Gemini just treats you as anonymous and plain text requests still return 200

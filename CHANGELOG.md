@@ -2,6 +2,24 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 4.4.0
+
+### 新增
+
+- **生图 / 音乐**。两个新模型 `gemini-image`（Nano Banana）和 `gemini-music`
+  （Lyria，约 30 秒），走 `/v1/chat/completions`。产物字节以 **base64 data URL** 直接
+  塞进返回的 `content`（图片 `![]`、音频 `[]`），不转外链——外链要 cookie 才下得到，
+  客户端拿不到。都要登录态，没配 cookie 时不进 `/v1/models`。
+
+  产物取回卡了很久的下载 403，根因三条（抓包 + 实测确认）：下载 host 只认 `.google.com`
+  域那 18 项 cookie（整串塞过去连 accounts 主机专属那几项一起发就 403）；图片链跨域
+  302，客户端默认不把 Cookie 带到新域（手动跟随、每跳重发解决）；图片响应给的是
+  `gg-dl` plain 链、GET 只回 text/plain 指针，真图要改成 `rd-gg-dl` 前缀。
+
+  base64 不计进 output token——一张图上百万字符，按它计费等于让用户为二进制买单。
+
+  实测：`gemini-image` → 512×279 PNG（106KB，可解码）；`gemini-music` → 744KB 合法 MP3。
+
 ## 4.3.0
 
 ### 新增

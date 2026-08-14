@@ -229,6 +229,8 @@ Gemini 网页端服务端只认三个模型（清单来自 `batchexecute?rpcids=
 | `gemini-3.6-flash-thinking` | 3.6 Flash 开扩展思考，**要配 cookie** |
 | `gemini-3.5-flash-lite-thinking` | 3.5 Flash-Lite 开扩展思考，**要配 cookie** |
 | `gemini-3.1-pro-thinking` | 3.1 Pro 开扩展思考，**要配 cookie** |
+| `gemini-image` | 生图（Nano Banana），产物 base64，**要配 cookie** |
+| `gemini-music` | 音乐（Lyria，约 30 秒），产物 base64，**要配 cookie** |
 
 没配 cookie 时 `/v1/models` 只返回前两个，选 `gemini-3.1-pro` 会直接报错并说明
 原因。因为匿名请求它必然被静默降级成 3.5 Flash-Lite——与其让客户端拿到一个
@@ -283,11 +285,31 @@ I've successfully defined..."
 `gemini-3.1-pro` 匿名时被静默降级成 3.5 Flash-Lite，所以干脆不暴露。
 
 挂上 cookie 额外解锁：`gemini-3.1-pro`、**三个模型的扩展思考版**、**读图**、**更长的上下文**
-（超长对话自动转成文本附件发，见下文）。
+（超长对话自动转成文本附件发，见下文），以及 **生图（`gemini-image`）** 和
+**音乐（`gemini-music`）**（见下面「生图 / 音乐」一节）。
 
-生图、音乐、视频、深度研究、画布也都需要登录，但**本项目尚未实现**——它们要在请求里
-多带工具开关位，而我们的参数数组还没开那么长。管理面板的「实际模型」列会把服务端
-实际用了哪个模型标出来，降级一眼可见。
+视频、深度研究、画布也需要登录，但**本项目尚未实现**：视频免费号被上游拒，深度研究是
+多步异步流程，都不是加一行能搞定的。管理面板的「实际模型」列会把服务端实际用了哪个
+模型标出来，降级一眼可见。
+
+### 生图 / 音乐
+
+`gemini-image`（Nano Banana）和 `gemini-music`（Lyria，约 30 秒）跟普通对话一样走
+`/v1/chat/completions`，user 消息里写要画什么 / 要什么曲子。产物字节以 **base64
+data URL** 放进返回的 `content`：图片是 `![image](data:image/png;base64,…)`、音频是
+`[audio](data:audio/mpeg;base64,…)`。支持 markdown 的客户端能直接把图渲染出来；要存
+文件就 decode 逗号后面那段 base64。
+
+```bash
+curl http://127.0.0.1:8083/v1/chat/completions \
+  -H "Authorization: Bearer sk-gemini-..." -H "Content-Type: application/json" \
+  -d '{"model":"gemini-image","messages":[{"role":"user","content":"画一只戴宇航员头盔的橘猫"}]}'
+```
+
+不转外链是有意的——Gemini 的产物链要带 cookie 才下得到，直接把链给客户端它打不开，
+所以服务端下回字节再转 base64。产物的 base64 **不计进 `completion_tokens`**（否则一张图
+上百万 token，下游按它计费就离谱了），只算模型附带的说明文字。都要登录态，没 cookie
+时这俩模型不进 `/v1/models`。参数如 `size` / `n` 上游没有对应旋钮，传了会被忽略。
 
 **多轮上下文是靠把 `messages` 拼成单个 prompt 实现的**（网页协议的原生多轮要一个
 浏览器 JS 运行时才能生成的令牌，纯 HTTP 造不出来）。代价是每轮重发全部历史，于是撞上
@@ -371,10 +393,10 @@ Cookie 池（按 URL、cookie 内容去重），之后一律从面板管理。�
 ## Cookie（可选）
 
 挂 Google 账号 cookie 后请求走登录态，多出来的能力是 **`gemini-3.1-pro` + 思考链**
-（见上文「思考链」一节）。免费账号实测可用，连打 6 次全部回报 `3.1 Pro`。
+（见上文「思考链」一节）、**读图**、**生图（`gemini-image`）/ 音乐（`gemini-music`）**
+（见上文「生图 / 音乐」一节）。免费账号实测可用，连打 6 次全部回报 `3.1 Pro`。
 
-网页端登录后还能用生图（Nano Banana 2）、音乐（Lyria 3）、视频、深度研究、画布，
-**本项目尚未实现这些**。
+网页端登录后还能用视频、深度研究、画布，**本项目尚未实现这几个**。
 
 > 带 cookie 的请求必须额外携带一个 XSRF token，本项目会自动从 Gemini 页面取并按
 > cookie 缓存、过期自动重取，无需配置。（这一步缺了会导致**所有**请求 400，
@@ -552,9 +574,9 @@ docker-compose.yml         单容器，默认拉 ghcr 镜像，sqlite 挂 volume
 ## 限制
 
 - **单 IP 上限**：突发地打，实测 **80-180 次请求**后被重定向到 sorry 页（连接复用能多打约 60%：并发 10 时复用 172/177、每次新建 106/109）。但**平缓打几乎打不满**——静态 IP 上 10 次/分钟连打 800 次没被拦。默认 `per_ip_rph=80` 取的是区间下沿 → 要放大产能配代理池，或按低速率跑并调高限额
-- **登录态功能**：生图、音乐、视频、深度研究、画布都没实现（协议已验证可用，缺的是请求参数位）
+- **登录态功能**：生图（`gemini-image`）、音乐（`gemini-music`）已实现；视频、深度研究、画布没实现（视频免费号被拒，深度研究是多步异步流程）
 - **Function calling**：prompt 级实现，模型不一定每次都按格式返回（OpenAI 真协议层我们做不到）
-- **多模态**：只做了读图，且要挂 cookie。生图、音乐、视频协议已验证可用但尚未实现
+- **多模态**：读图要挂 cookie；生图/音乐挂 cookie 可用（`gemini-image` / `gemini-music`），视频生成尚未实现
 - **长上下文有两堵墙**：请求体约 13 万字节、附件约 16 万字节（后者是模型能看到的内容**总量**，切成多份附件不涨额度）。挂 cookie 只能把可用长度从 13 万提到约 16 万，真正的长对话仍需客户端自己压缩
 - **token 数**：用 tiktoken 估算（Gemini 真 tokenizer 未公开），跟真值偏差 ±20% 以内
 - **Cookie 池不自动摘除坏号**：请求成败会回写（只把 401/403 算作 cookie 的错，网络错误和 302 拦截不算），但失败到一定次数不会自动禁用，得看面板手动停。另外 `last_ok_at` 只说明"这个 cookie 参与的请求成功过"，不等于它仍然有效——cookie 过期后 Gemini 不报错，只是把你当匿名用户，纯文本请求照样 200
