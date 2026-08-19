@@ -1,0 +1,25 @@
+{
+  "date": "2026-08-19",
+  "service": "gemini-web2api-go",
+  "version": "v4.4.0",
+  "endpoint": "http://127.0.0.1:8083",
+  "result": "PASS",
+  "checks": {
+    "process_running": true,
+    "port_listening": true,
+    "health_status": 200,
+    "protected_without_token_status": 401,
+    "protected_wrong_token_status": 401,
+    "protected_with_runtime_token_status": 200,
+    "login_status": 200,
+    "authenticated_session_status": 200,
+    "logout_status": 200,
+    "source_or_config_modified": false
+  },
+  "evidence": {
+    "raw_config_uploaded": false,
+    "database_uploaded": false,
+    "raw_logs_uploaded": false,
+    "redacted_logs_uploaded": true
+  }
+}
