@@ -1,0 +1,13 @@
+gemini-web2api-go v4.4.0
+  Listening:   http://127.0.0.1:8083
+  Base URL:    http://127.0.0.1:8083/v1
+  API key:     [REDACTED]  (locked by flag/env)
+  Admin UI:    http://127.0.0.1:8083/admin  (token auth)
+  DB:          ./data/factory-poc-gemini.db
+  Models:      [gemini-3.5-flash-lite gemini-3.6-flash]
+  Cookie:      [REDACTED] (anonymous)
+  Proxy:       1 in pool
+  Impersonate: chrome_146
+  Tokenizer:   tiktoken cl100k_base
+  Per-IP 限流: 并发=5 / RPM=30 / RPH=80
+  Retry:       3x / 2s
