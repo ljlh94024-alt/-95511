@@ -1,0 +1,38 @@
+2026-08-19 FACTORY BRIDGE TRACE
+
+[1 bridge -> executor] PASS
+factory/codex_bridge.py imports execute_work_order and calls it after WorkOrder validation and Controller registration.
+Historical evidence: factory_codex_calls_executor=PASS; executor status=complete.
+
+[2 work order -> dispatcher] NOT_REACHED_IN_SUCCESSFUL_RUN
+The executor creates _DispatchingController and wires Dispatcher.consult.
+The successful trajectory intercepted only: submit.
+No factory ask-gemini action was emitted, so Dispatcher.consult and the Gemini consultation branch did not execute.
+
+[3 worker startup] PASS
+Worker model: cohere/north-mini-code:free
+mini-SWE exit status: Submitted
+trajectory messages: 22
+trajectory model API calls: 10
+trajectory bytes: 76449
+
+[4 provider calls] SPLIT RESULT
+Worker provider: PASS; the Worker produced the successful trajectory through OpenRouter.
+Gemini Web Provider: NOT_REACHED in the successful run; no ask-gemini action was emitted.
+
+[5 factory submit] PASS
+FactoryEnvironment intercepted: submit
+Controller task status: done
+
+[6 controller Git commit] PASS
+Controller-owned commit generated.
+result_sha present.
+tested_sha == result_sha: PASS
+
+[7 current rerun blocker]
+OPENROUTER_API_KEY: missing in current Factory process.
+Gemini Web proxy preflight: HTTP 401 / unauthorized on the protected API endpoint.
+Docker daemon: unavailable on the Docker Desktop Linux engine pipe.
+
+Conclusion:
+The bridge is not a READY-only handoff anymore. The local executor and Worker path are real and were completed once. The missing coverage is an actual Worker-issued factory ask-gemini call, which must be tested only after current provider credentials are configured.

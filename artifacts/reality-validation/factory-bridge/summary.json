@@ -1,0 +1,34 @@
+{
+  "date": "2026-08-19",
+  "result": "PARTIAL",
+  "bridge": {
+    "work_order_validation": "PASS",
+    "executor_called": "PASS",
+    "controller_registered_work_order": "PASS"
+  },
+  "successful_local_smoke": {
+    "execution_mode": "local",
+    "docker_used": false,
+    "worker_started": true,
+    "worker_provider": "openrouter",
+    "worker_model": "cohere/north-mini-code:free",
+    "worker_exit_status": "Submitted",
+    "trajectory_message_count": 22,
+    "worker_provider_api_calls": 10,
+    "dispatcher_wired": true,
+    "dispatcher_executed": false,
+    "intercepted_factory_commands": ["submit"],
+    "gemini_provider_called": false,
+    "submit_triggered": true,
+    "controller_task_status": "done",
+    "commit_generated": true,
+    "tested_sha_equals_result_sha": true
+  },
+  "current_preflight": {
+    "openrouter_credential": "missing",
+    "gemini_web_api": "unauthorized_http_401",
+    "docker_daemon": "unavailable"
+  },
+  "blocking_point": "A live rerun cannot reach a Worker-issued factory ask-gemini until current Worker and Factory-side Gemini credentials are configured.",
+  "required_next_command_sequence": ["factory ask-gemini", "submit"]
+}
