@@ -1,0 +1,52 @@
+name: Publish tested Yinlv preview once
+on:
+  push:
+    branches: [yinlv-hub-test-20260918]
+    paths: [.github/workflows/publish-yinlv-preview-once.yml]
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: yinlv-hub-test-20260918
+          fetch-depth: 1
+      - name: Import only the tested public static-site artifact
+        env:
+          SITE_ARTIFACT: 'https://sdmntprwestcentralus.oaiusercontent.com/files/00000000-1408-81fb-addf-79a114935c1e/raw?se=2026-09-18T01%3A34%3A31Z&sp=r&sv=2026-02-06&sr=b&scid=7ff11a94-dcf9-56d0-b5ef-3c011b1ebc76&skoid=80e81ea6-3c08-46f9-bd84-b87176742bcd&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2026-09-17T18%3A12%3A31Z&ske=2026-09-18T18%3A12%3A31Z&sks=b&skv=2026-02-06&sig=RrR07%2BiUzAvBqAW2l7DQpLvqMbw7V6Qh8526D8bJxIg%3D'
+        run: |
+          python - <<'PY'
+          import io, os, pathlib, urllib.request, zipfile
+          root = pathlib.Path('yinlv-hub-test').resolve()
+          data = urllib.request.urlopen(os.environ['SITE_ARTIFACT'], timeout=60).read()
+          assert len(data) == 8059743, 'Unexpected artifact length'
+          archive = zipfile.ZipFile(io.BytesIO(data))
+          members = archive.infolist()
+          assert sum(i.filename.endswith('.html') for i in members) == 31
+          assert sum(i.file_size for i in members) < 40000000
+          for item in members:
+              path = root / item.filename
+              assert path.resolve().is_relative_to(root)
+              assert not any(p.startswith('.') for p in pathlib.PurePosixPath(item.filename).parts)
+              assert path.suffix in {'.html','.css','.js','.svg','.webp','.png','.txt','.md'}
+              assert (item.external_attr >> 16) & 0o170000 != 0o120000
+          for item in members:
+              path = root / item.filename
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_bytes(archive.read(item))
+          for section in ['start','topics','stories','read','practice','share']:
+              text = (root / section / 'index.html').read_text()
+              assert '<h1>' in text and '#test-note' not in text
+          print('Imported 31 complete HTML pages and their static resources.')
+          PY
+      - name: Commit only preview files and remove the one-time workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- yinlv-hub-test
+          git rm -- .github/workflows/publish-yinlv-preview-once.yml
+          git commit -m 'Publish Yinlv v0.2: six complete sections, source links and tested reader'
+          git push origin HEAD:yinlv-hub-test-20260918
